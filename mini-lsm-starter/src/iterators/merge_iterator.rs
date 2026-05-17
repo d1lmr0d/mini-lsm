@@ -17,6 +17,7 @@
 
 use std::cmp::{self};
 use std::collections::BinaryHeap;
+use std::collections::binary_heap::PeekMut;
 
 use anyhow::Result;
 
@@ -59,7 +60,23 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        if iters.is_empty() {
+            return Self {
+                iters: BinaryHeap::new(),
+                current: None,
+            };
+        }
+        let mut heap = BinaryHeap::new();
+        for (i, iter) in iters.into_iter().enumerate() {
+            if iter.is_valid() {
+                heap.push(HeapWrapper(i, iter));
+            }
+        }
+        let current = heap.pop().unwrap();
+        Self {
+            iters: heap,
+            current: Some(current),
+        }
     }
 }
 
@@ -69,18 +86,45 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice<'_> {
-        unimplemented!()
+        let current = self.current.as_ref().unwrap();
+        current.1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        let current = self.current.as_ref().unwrap();
+        current.1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        match self.current.as_ref() {
+            Some(c) => c.1.is_valid(),
+            None => false,
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if self.current.is_none() {
+            return Ok(());
+        }
+        if let Some(mut current) = self.current.take() {
+            while let Some(mut inner_iter) = self.iters.peek_mut() {
+                if current.1.key() != inner_iter.1.key() {
+                    break;
+                }
+                if let err @ Err(_) = inner_iter.1.next() {
+                    PeekMut::pop(inner_iter);
+                    return err;
+                }
+                if !inner_iter.1.is_valid() {
+                    PeekMut::pop(inner_iter);
+                }
+            }
+            current.1.next()?;
+            if current.1.is_valid() {
+                self.iters.push(current);
+            }
+            self.current = self.iters.pop();
+        }
+        Ok(())
     }
 }
