@@ -19,12 +19,17 @@ use anyhow::Result;
 
 use super::StorageIterator;
 
+enum Current {
+    A,
+    B,
+}
+
 /// Merges two iterators of different types into one. If the two iterators have the same key, only
 /// produce the key once and prefer the entry from A.
 pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
-    // Add fields as need
+    current: Option<Current>,
 }
 
 impl<
@@ -33,7 +38,36 @@ impl<
 > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        let mut iter = Self {
+            a,
+            b,
+            current: None,
+        };
+        iter.skip_duplicates()?;
+        iter.current = iter.match_current();
+        Ok(iter)
+    }
+
+    fn match_current(&self) -> Option<Current> {
+        match (self.a.is_valid(), self.b.is_valid()) {
+            (false, false) => None,
+            (true, false) => Some(Current::A),
+            (false, true) => Some(Current::B),
+            (true, true) => {
+                if self.a.key() <= self.b.key() {
+                    Some(Current::A)
+                } else {
+                    Some(Current::B)
+                }
+            }
+        }
+    }
+
+    fn skip_duplicates(&mut self) -> Result<()> {
+        while self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
+            self.b.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -45,18 +79,38 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        match self.current.as_ref().unwrap() {
+            Current::A => self.a.key(),
+            Current::B => self.b.key(),
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        match self.current.as_ref().unwrap() {
+            Current::A => self.a.value(),
+            Current::B => self.b.value(),
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a.is_valid() || self.b.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current = match self.current.take() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        match current {
+            Current::A => {
+                self.a.next()?;
+            }
+            Current::B => {
+                self.b.next()?;
+            }
+        }
+        self.skip_duplicates()?;
+        self.current = self.match_current();
+        Ok(())
     }
 }

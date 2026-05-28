@@ -72,7 +72,15 @@ impl<I: StorageIterator> MergeIterator<I> {
                 heap.push(HeapWrapper(i, iter));
             }
         }
-        let current = heap.pop().unwrap();
+        let current = match heap.pop() {
+            Some(c) => c,
+            None => {
+                return Self {
+                    iters: BinaryHeap::new(),
+                    current: None,
+                };
+            }
+        };
         Self {
             iters: heap,
             current: Some(current),
