@@ -39,12 +39,17 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
+        let mut first_key = KeyVec::new();
+        if !block.offsets.is_empty() {
+            let (key, _, _) = Self::decode_key_at(0, &block, &first_key);
+            first_key = key;
+        }
         Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
-            first_key: KeyVec::new(),
+            first_key,
         }
     }
 
@@ -90,25 +95,51 @@ impl BlockIterator {
         self.update_current_pair();
     }
 
+    fn decode_key_at(idx: usize, block: &Block, first_key: &KeyVec) -> (KeyVec, usize, usize) {
+        let offset = block.offsets[idx] as usize;
+        if idx == 0 {
+            let key_len = u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
+            let key = KeyVec::from_vec(
+                block.data[offset + LEN_SIZE..offset + LEN_SIZE + key_len].to_vec(),
+            );
+            let value_len = u16::from_le_bytes([
+                block.data[offset + LEN_SIZE + key_len],
+                block.data[offset + LEN_SIZE + key_len + 1],
+            ]) as usize;
+            let value_start = offset + LEN_SIZE + key_len + LEN_SIZE;
+            (key, value_start, value_start + value_len)
+        } else {
+            let overlap_len =
+                u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
+            let rest_len = u16::from_le_bytes([
+                block.data[offset + LEN_SIZE],
+                block.data[offset + LEN_SIZE + 1],
+            ]) as usize;
+            let rest_offset = offset + LEN_SIZE * 2;
+            let mut key = KeyVec::from_vec(first_key.raw_ref()[..overlap_len].to_vec());
+            key.append(&block.data[rest_offset..rest_offset + rest_len]);
+            let value_len = u16::from_le_bytes([
+                block.data[offset + LEN_SIZE * 2 + rest_len],
+                block.data[offset + LEN_SIZE * 2 + rest_len + 1],
+            ]) as usize;
+            let value_start = offset + LEN_SIZE * 2 + rest_len + LEN_SIZE;
+            (key, value_start, value_start + value_len)
+        }
+    }
+
     fn update_current_pair(&mut self) {
         if self.idx >= self.block.offsets.len() {
             self.key.clear();
             self.value_range = (0, 0);
             return;
         }
-        let offset = self.block.offsets[self.idx] as usize;
-        let key_len =
-            u16::from_le_bytes([self.block.data[offset], self.block.data[offset + 1]]) as usize;
-        let key_slice = &self.block.data[offset + LEN_SIZE..offset + LEN_SIZE + key_len];
-        self.key = KeyVec::from_vec(key_slice.to_vec());
-        let value_len = u16::from_le_bytes([
-            self.block.data[offset + LEN_SIZE + key_len],
-            self.block.data[offset + LEN_SIZE + key_len + 1],
-        ]) as usize;
-        self.value_range = (
-            offset + LEN_SIZE + key_len + LEN_SIZE,
-            offset + LEN_SIZE + key_len + LEN_SIZE + value_len,
-        );
+        let (key, value_start, value_end) =
+            Self::decode_key_at(self.idx, &self.block, &self.first_key);
+        self.key = key;
+        self.value_range = (value_start, value_end);
+        if self.idx == 0 {
+            self.first_key = self.key.clone();
+        }
     }
 
     /// Seek to the first key that >= `key`.
@@ -119,11 +150,8 @@ impl BlockIterator {
         let mut right = self.block.offsets.len();
         while left < right {
             let mid = left + (right - left) / 2;
-            let offset = self.block.offsets[mid] as usize;
-            let key_len =
-                u16::from_le_bytes([self.block.data[offset], self.block.data[offset + 1]]) as usize;
-            let key_slice = &self.block.data[offset + LEN_SIZE..offset + LEN_SIZE + key_len];
-            if KeySlice::from_slice(key_slice) < key {
+            let (mid_key, _, _) = Self::decode_key_at(mid, &self.block, &self.first_key);
+            if mid_key.as_key_slice() < key {
                 left = mid + 1;
             } else {
                 right = mid;

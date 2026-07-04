@@ -26,12 +26,13 @@ use crate::{
     block::BlockBuilder,
     key::{KeyBytes, KeySlice},
     lsm_storage::BlockCache,
-    table::FileObject,
+    table::{FileObject, bloom::Bloom},
 };
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
+    keys: Vec<Vec<u8>>,
     first_key: Vec<u8>,
     last_key: Vec<u8>,
     data: Vec<u8>,
@@ -44,6 +45,7 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
+            keys: Vec::new(),
             first_key: Vec::new(),
             last_key: Vec::new(),
             data: Vec::new(),
@@ -57,17 +59,19 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        let _key = key.to_key_vec().into_inner();
+        self.keys.push(_key.clone());
         if self.first_key.is_empty() {
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key = _key.clone();
         }
         if self.builder.add(key, value) {
-            self.last_key = key.to_key_vec().into_inner();
+            self.last_key = _key.clone();
             return;
         }
         self.finish_block();
         assert!(self.builder.add(key, value));
-        self.first_key = key.to_key_vec().into_inner();
-        self.last_key = key.to_key_vec().into_inner();
+        self.first_key = _key.clone();
+        self.last_key = _key.clone();
     }
 
     pub fn finish_block(&mut self) {
@@ -101,6 +105,17 @@ impl SsTableBuilder {
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
         self.data
             .extend_from_slice(&(block_meta_offset as u32).to_le_bytes());
+        let bloom_offset = self.data.len();
+        let keys = self
+            .keys
+            .iter()
+            .map(|k| farmhash::fingerprint32(k.as_slice()))
+            .collect::<Vec<_>>();
+        let bloom_bits_per_key = Bloom::bloom_bits_per_key(keys.len(), 0.01);
+        let bloom = Bloom::build_from_key_hashes(&keys, bloom_bits_per_key);
+        bloom.encode(&mut self.data);
+        self.data
+            .extend_from_slice(&(bloom_offset as u32).to_le_bytes());
         let file = FileObject::create(path.as_ref(), self.data)?;
         Ok(SsTable {
             file,
@@ -110,7 +125,7 @@ impl SsTableBuilder {
             block_cache,
             first_key: self.meta.first().unwrap().first_key.clone(),
             last_key: self.meta.last().unwrap().last_key.clone(),
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }

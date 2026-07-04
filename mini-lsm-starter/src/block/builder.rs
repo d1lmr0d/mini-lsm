@@ -48,15 +48,33 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let entry_size = key.len() + 2 + value.len() + 2;
+        let is_first = self.is_empty();
+        let entry_size = if is_first {
+            key.len() + 2 + value.len() + 2
+        } else {
+            let overlap_len = key.common_prefix(self.first_key.as_key_slice());
+            let rest_len = key.len() - overlap_len;
+            rest_len + 4 + value.len() + 2
+        };
         let current_block_size = self.data.len() + self.offsets.len() * 2;
         let expected_block_size = current_block_size + entry_size + 2;
-        if !self.is_empty() && expected_block_size > self.block_size {
-            return false;
+        if !is_first {
+            if expected_block_size > self.block_size {
+                return false;
+            }
         }
         self.offsets.push(self.data.len() as u16);
-        self.data.put_u16_le(key.len() as u16);
-        self.data.put_slice(key.into_inner());
+        if is_first {
+            self.data.put_u16_le(key.len() as u16);
+            self.data.put_slice(key.into_inner());
+            self.first_key.set_from_slice(key);
+        } else {
+            let overlap_len = key.common_prefix(self.first_key.as_key_slice());
+            let rest_len = key.len() - overlap_len;
+            self.data.put_u16_le(overlap_len as u16);
+            self.data.put_u16_le(rest_len as u16);
+            self.data.put_slice(&key.into_inner()[overlap_len..]);
+        }
         self.data.put_u16_le(value.len() as u16);
         self.data.put_slice(value);
         true

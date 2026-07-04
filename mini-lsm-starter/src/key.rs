@@ -129,6 +129,14 @@ impl<'a> Key<&'a [u8]> {
         self.0
     }
 
+    pub fn common_prefix(&self, other: KeySlice) -> usize {
+        self.0
+            .iter()
+            .zip(other.0)
+            .take_while(|(a, b)| a == b)
+            .count()
+    }
+
     pub fn for_testing_key_ref(self) -> &'a [u8] {
         self.0
     }

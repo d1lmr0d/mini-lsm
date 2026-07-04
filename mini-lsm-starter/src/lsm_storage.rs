@@ -335,6 +335,11 @@ impl LsmStorageInner {
         let key = KeySlice::from_slice(_key);
         for l0_sstable in snapshot.l0_sstables.iter() {
             let l0_sst = snapshot.sstables[l0_sstable].clone();
+            if let Some(bloom) = &l0_sst.bloom {
+                if !bloom.may_contain(farmhash::fingerprint32(_key)) {
+                    continue;
+                }
+            }
             if !key_within(
                 l0_sst.first_key().as_key_slice(),
                 l0_sst.last_key().as_key_slice(),
