@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 
 use super::StorageIterator;
 use crate::{
@@ -34,12 +34,64 @@ pub struct SstConcatIterator {
 }
 
 impl SstConcatIterator {
+    fn move_until_valid(&mut self) -> Result<()> {
+        while let Some(iter) = self.current.as_mut() {
+            if iter.is_valid() {
+                break;
+            }
+            if self.next_sst_idx >= self.sstables.len() {
+                self.current = None;
+            } else {
+                self.current = Some(SsTableIterator::create_and_seek_to_first(
+                    self.sstables[self.next_sst_idx].clone(),
+                )?);
+                self.next_sst_idx += 1;
+            }
+        }
+        Ok(())
+    }
+
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
-        unimplemented!()
+        let mut iter = Self {
+            current: None,
+            next_sst_idx: 0,
+            sstables,
+        };
+        if !iter.sstables.is_empty() {
+            iter.current = Some(SsTableIterator::create_and_seek_to_first(
+                iter.sstables[0].clone(),
+            )?);
+            iter.next_sst_idx = 1;
+        }
+        iter.move_until_valid()?;
+        Ok(iter)
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
-        unimplemented!()
+        let mut iter = Self {
+            current: None,
+            next_sst_idx: 0,
+            sstables,
+        };
+        let mut left = 0;
+        let mut right = iter.sstables.len();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            if iter.sstables[mid].last_key().as_key_slice() < key {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        if left < iter.sstables.len() {
+            iter.current = Some(SsTableIterator::create_and_seek_to_key(
+                iter.sstables[left].clone(),
+                key,
+            )?);
+            iter.next_sst_idx = left + 1;
+        }
+        iter.move_until_valid()?;
+        Ok(iter)
     }
 }
 
@@ -47,19 +99,21 @@ impl StorageIterator for SstConcatIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice<'_> {
-        unimplemented!()
+        self.current.as_ref().unwrap().key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current.is_some()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.current.as_mut().unwrap().next()?;
+        self.move_until_valid()?;
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
