@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::lsm_storage::LsmStorageState;
@@ -49,7 +51,32 @@ impl SimpleLeveledCompactionController {
         &self,
         _snapshot: &LsmStorageState,
     ) -> Option<SimpleLeveledCompactionTask> {
-        unimplemented!()
+        if _snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            return Some(SimpleLeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: _snapshot.l0_sstables.clone(),
+                lower_level: 1,
+                lower_level_sst_ids: _snapshot.levels[0].1.clone(),
+                is_lower_level_bottom_level: self.options.max_levels == 1,
+            });
+        }
+        for level in 1.._snapshot.levels.len() {
+            if _snapshot.levels[level - 1].1.is_empty() {
+                continue;
+            }
+            let size_ratio =
+                _snapshot.levels[level].1.len() / _snapshot.levels[level - 1].1.len() * 100;
+            if size_ratio < self.options.size_ratio_percent {
+                return Some(SimpleLeveledCompactionTask {
+                    upper_level: Some(level),
+                    upper_level_sst_ids: _snapshot.levels[level - 1].1.clone(),
+                    lower_level: level + 1,
+                    lower_level_sst_ids: _snapshot.levels[level].1.clone(),
+                    is_lower_level_bottom_level: self.options.max_levels == level + 1,
+                });
+            }
+        }
+        None
     }
 
     /// Apply the compaction result.
@@ -65,6 +92,37 @@ impl SimpleLeveledCompactionController {
         _task: &SimpleLeveledCompactionTask,
         _output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut sst_ids_to_remove = Vec::new();
+        let mut snapshot = _snapshot.clone();
+        if let Some(upper_level) = _task.upper_level {
+            assert_eq!(
+                _task.upper_level_sst_ids,
+                snapshot.levels[upper_level - 1].1,
+            );
+            sst_ids_to_remove.extend_from_slice(&snapshot.levels[upper_level - 1].1);
+            snapshot.levels[upper_level - 1].1.clear();
+        } else {
+            sst_ids_to_remove.extend_from_slice(&_task.upper_level_sst_ids);
+            let mut l0_sstables = _task
+                .upper_level_sst_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>();
+            let new_l0_sstables = snapshot
+                .l0_sstables
+                .iter()
+                .copied()
+                .filter(|x| !l0_sstables.remove(x))
+                .collect::<Vec<_>>();
+            assert!(l0_sstables.is_empty());
+            snapshot.l0_sstables = new_l0_sstables;
+        }
+        assert_eq!(
+            _task.lower_level_sst_ids,
+            snapshot.levels[_task.lower_level - 1].1,
+        );
+        sst_ids_to_remove.extend_from_slice(&snapshot.levels[_task.lower_level - 1].1);
+        snapshot.levels[_task.lower_level - 1].1 = _output.to_vec();
+        (snapshot, sst_ids_to_remove)
     }
 }
